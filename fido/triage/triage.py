@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import hashlib
 import re
+import subprocess
 
 CLASSES = ["MEM", "UNINIT", "INT_UB", "LIFETIME", "CONC", "LOGIC"]
 
@@ -110,10 +111,32 @@ def dedup(findings: list) -> list:
     return out
 
 
-def intent_check(f: dict, cls: str) -> str:
+def _source_context(cr, path: str, line: str, span: int = 3) -> str:
+    """Read the offending source region at the reported commit. UBSan/ASan
+    report paths point into the materialized build dir; map back to the
+    repo-relative path (everything after src_<hash>/)."""
+    if cr is None:
+        return ""
+    m = re.search(r"src_[0-9a-f]+/(.+)$", path)
+    rel = m.group(1) if m else path
+    try:
+        out = subprocess.run(["git", "-C", cr.repo, "show", f"{cr.commit}:{rel}"],
+                             capture_output=True, text=True, check=True).stdout
+        lines = out.splitlines()
+        ln = int(line)
+        lo, hi = max(0, ln - 1 - span), min(len(lines), ln + span)
+        return "\n".join(lines[lo:hi])
+    except Exception:
+        return ""
+
+
+def intent_check(f: dict, cls: str, cr=None) -> str:
     if cls != "INT_UB":
         return "n/a"
     src_context = (f.get("stderr_tail") or "") + (f.get("input") or "")
+    m = UBSAN_RX.search(f.get("stderr_tail", ""))
+    if m:
+        src_context += "\n" + _source_context(cr, m.group(1), m.group(2))
     if INTENT_HASH_IDIOM.search(src_context):
         return "suspected_intentional (hash idiom)"
     return "suspected_genuine"
@@ -128,7 +151,7 @@ def triage(raw_findings: list, cr) -> list:
             "class": cls,
             "severity": SEVERITY[cls],
             "attribution": att,
-            "intent": intent_check(f, cls),
+            "intent": intent_check(f, cls, cr),
             "arm": f.get("arm"),
             "kind": f.get("kind"),
             "evidence": (f.get("stderr_tail") or "")[-600:],

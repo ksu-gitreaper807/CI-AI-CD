@@ -1,8 +1,14 @@
 """Unit tests — plain asserts, no external deps. Run: python3 -m tests.run_all"""
-import os, sys
+import os, subprocess, sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 DEMO = "/tmp/fido-demo/calcstat"
+HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+# self-heal: tests depend on the demo project; regenerate if absent
+if not os.path.isdir(os.path.join(DEMO, ".git")):
+    subprocess.run(["bash", os.path.join(HERE, "scripts", "setup_demo.sh")],
+                   check=True, capture_output=True)
 
 def t_planner_respects_budget_and_floors():
     from fido.plan.planner import allocate, available_arms, CLASSES
@@ -83,13 +89,37 @@ def t_deep_guard_trigger():
     from fido.change.extractor import ChangeRecord, Entity
     cr = ChangeRecord(repo="x", commit="y", parent="z")
     e = Entity(name="f", file="a.c", op="modified")
-    e.added_lines = [(10, "if (x == 0xDEADBEEF) {")]
+    e.added_lines = ["if (x == 0xDEADBEEF) {"]
     e.ast_ops = []
     cr.entities = [e]
     assert triggered(cr)[0] is True
-    e.added_lines = [(10, "x = y + 1;")]
+    e.added_lines = ["x = y + 1;"]
     assert triggered(cr)[0] is False
     return True
+
+def t_intent_source_context():
+    """Intent filter must recognize hash idioms from SOURCE at the offending
+    commit, not just from report text (the report rarely contains idioms)."""
+    import subprocess
+    from fido.triage.triage import intent_check
+    from fido.change.extractor import ChangeRecord
+    log = subprocess.run(["git", "-C", DEMO, "log", "--format=%H %s"],
+                         capture_output=True, text=True, check=True).stdout
+    sha = next(l.split()[0] for l in log.splitlines() if "content hash" in l)
+    src = subprocess.run(["git", "-C", DEMO, "show", f"{sha}:src/stats.c"],
+                         capture_output=True, text=True, check=True).stdout
+    line = next(i for i, l in enumerate(src.splitlines(), 1) if "0x9e3779b9" in l)
+    cr = ChangeRecord(repo=DEMO, commit=sha, parent=f"{sha}~1")
+    f = {"stderr_tail": f"/build/src_abc123/src/stats.c:{line}:5: runtime error: "
+                        f"left shift of 1000 by 6 places cannot be represented in type 'int'"}
+    res = intent_check(f, "INT_UB", cr)
+    assert "hash idiom" in res, res
+    # and a genuine overflow far from any idiom stays 'genuine'
+    f2 = {"stderr_tail": f"/build/src_abc123/src/stats.c:5:9: runtime error: "
+                         f"signed integer overflow cannot be represented in type 'int'"}
+    assert intent_check(f2, "INT_UB", cr) == "suspected_genuine"
+    return True
+
 
 TESTS = [v for k, v in sorted(globals().items()) if k.startswith("t_")]
 

@@ -77,10 +77,13 @@ python3 -m fido run /tmp/fido-demo/calcstat HEAD --budget 900 --policy p4
 python3 -m eval.replay /tmp/fido-demo/calcstat --budget 300 --policy p4
 ```
 
-Expected on the demo BIC: prediction `INT_UB > MEM`, sanitizer plan `INT_UB→ubsan, MEM→asan`,
-and two high-attribution findings — `stack-buffer` OOB write at `main.c:10` (fuzz arm) and
-signed-integer-overflow at `main.c:11` (generated boundary input `2147483647 2147483647`,
-gen arm). The replay table separates clean commits (no findings) from the BIC (both bugs).
+Expected results are documented with real output in `docs/replay_walkthrough.md` and
+`docs/example_report_bic.md`. In brief: the BIC is caught by two steered arms (fuzzer →
+OOB write at `main.c:10`; *generated* boundary input `2147483647 2147483647` → signed
+overflow at `main.c:11`), both attributed high; clean commits and the fix commit produce
+zero findings; the hash commit's UB is flagged `suspected_intentional (hash idiom)` by the
+source-aware intent filter; the magic-guard commit fires the deep-guard trigger (concolic
+required) instead of wasting fuzzing budget.
 
 ## What is real vs. adapter (honesty table)
 

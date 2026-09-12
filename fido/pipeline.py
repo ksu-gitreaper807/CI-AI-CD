@@ -22,8 +22,12 @@ from fido.learn.loop import YieldModel, append_run_record, autolabel_candidates
 from fido.ledger import Ledger
 
 
+_QUIET = {"v": False}
+
+
 def _log(msg: str):
-    print(f"[fido] {msg}", flush=True)
+    if not _QUIET["v"]:
+        print(f"[fido] {msg}", flush=True)
 
 
 def run(repo: str, commit: str, budget_s: float = 900.0, policy: str = "p4",
@@ -31,6 +35,7 @@ def run(repo: str, commit: str, budget_s: float = 900.0, policy: str = "p4",
     import subprocess as _sp
     commit = _sp.run(["git", "-C", repo, "rev-parse", commit],
                      capture_output=True, text=True, check=True).stdout.strip()
+    _QUIET["v"] = quiet
     out_dir = out_dir or os.path.join("runs", commit[:8])
     os.makedirs(out_dir, exist_ok=True)
     cache_dir = os.path.join(out_dir, "cache")
@@ -59,6 +64,14 @@ def run(repo: str, commit: str, budget_s: float = 900.0, policy: str = "p4",
         if jb and "commit_probs" in jb:
             probs = jb["commit_probs"]
             preds["tier"] += "+B"
+
+    # ---- deep-guard trigger (cheap static check; independent of engine availability)
+    guard_hit, guard_evidence = concolic.triggered(cr)
+    if guard_hit:
+        _log(f"  deep-guard trigger fired: {len(guard_evidence)} evidence site(s) "
+             f"{[e[0] for e in guard_evidence[:3]]}")
+    cr.deep_guard = {"triggered": guard_hit,
+                     "evidence": [f"{f}:{t}" for f, t in guard_evidence[:5]]}
 
     # ---- capability probe (constraint propagation) -----------------------
     san_capable = builds.probe_sanitizers()
@@ -136,6 +149,7 @@ def run(repo: str, commit: str, budget_s: float = 900.0, policy: str = "p4",
                    "by_arm": ledger.by_arm()},
         "arm_results": arm_results, "findings": findings,
         "wall_s": round(time.time() - t_wall0, 2),
+        "deep_guard": getattr(cr, "deep_guard", {"triggered": False, "evidence": []}),
         "change": cr.to_dict(),
     }
     with open(os.path.join(out_dir, "run_record.json"), "w") as f:

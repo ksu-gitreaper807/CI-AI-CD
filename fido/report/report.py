@@ -4,6 +4,7 @@ from __future__ import annotations
 
 def render(record: dict) -> str:
     p = record["predictions"]
+    record_deep_guard = record.get("deep_guard")
     plan = record["plan"]
     led = record["ledger"]
     fs = record["findings"]
@@ -24,6 +25,12 @@ def render(record: dict) -> str:
         a("")
         a("**Unavailable arms (constraint-propagated):** " +
           "; ".join(f"{x['name']} ({x['reason']})" for x in skipped))
+    dg = record_deep_guard
+    if dg and dg.get("triggered"):
+        a("")
+        a("**Deep-guard trigger fired** (hard input guards in changed code): "
+          + "; ".join(dg.get("evidence", [])[:3]) +
+          " — mutation fuzzing is unlikely to reach these; a concolic engine is required.")
     a("")
     a(f"**Spent:** {led['spent']}/{led['budget_s']}s — " +
       " · ".join(f"{k} {v}s" for k, v in sorted(led["by_arm"].items())))

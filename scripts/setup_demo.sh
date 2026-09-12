@@ -126,5 +126,106 @@ GIT_AUTHOR_DATE="2026-08-20T10:00:00" GIT_COMMITTER_DATE="2026-08-20T10:00:00" \
   git -C "$ROOT" add -A && GIT_AUTHOR_DATE="2026-08-20T10:00:00" GIT_COMMITTER_DATE="2026-08-20T10:00:00" \
   git -C "$ROOT" commit -qm "optimize accumulation, lift artificial input limits"
 
+
+# ---- commit 4: THE FIX (restore bounds + 64-bit accumulation) ---------------
+cat > "$ROOT/src/main.c" <<'EOF'
+#include <stdio.h>
+#include "stats.h"
+#define MAX_VALUES 64
+int main(void) {
+    int values[MAX_VALUES];
+    int n = 0;
+    long long total = 0;
+    int x;
+    while (n < MAX_VALUES && scanf("%d", &x) == 1) {
+        values[n++] = x;
+        total += x;
+    }
+    if (n == 0) { printf("no input\n"); return 1; }
+    printf("count=%d sum=%lld mean=%.2f var=%.2f\n", n, total, mean(values, n), variance(values, n));
+    return 0;
+}
+EOF
+GIT_AUTHOR_DATE="2026-09-01T10:00:00" GIT_COMMITTER_DATE="2026-09-01T10:00:00" \
+  git -C "$ROOT" add -A && GIT_AUTHOR_DATE="2026-09-01T10:00:00" GIT_COMMITTER_DATE="2026-09-01T10:00:00" \
+  git -C "$ROOT" commit -qm "restore input bounds and 64-bit accumulation (fixes regression)"
+
+# ---- commit 5: hash combine (INT_UB via signed shift, hash-idiom context) ----
+cat > "$ROOT/src/stats.c" <<'EOF'
+#include "stats.h"
+double mean(const int *v, int n) {
+    if (n <= 0) return 0.0;
+    long long s = 0;
+    for (int i = 0; i < n; i++) s += v[i];
+    return (double)s / n;
+}
+double variance(const int *v, int n) {
+    if (n < 2) return 0.0;
+    long long s = 0;
+    for (int i = 0; i < n; i++) s += v[i];
+    double m = (double)s / n;
+    double acc = 0.0;
+    for (int i = 0; i < n; i++) acc += ((double)v[i] - m) * ((double)v[i] - m);
+    return acc / (n - 1);
+}
+int hash_combine(int h, int value) {
+    h ^= value + 0x9e3779b9 + (h << 6) + (h >> 2);   /* boost-style hash combine */
+    return h;
+}
+unsigned int hash_values(const int *v, int n) {
+    int h = 17;
+    for (int i = 0; i < n; i++) h = hash_combine(h, v[i]);
+    return (unsigned int) h;
+}
+EOF
+cat > "$ROOT/src/main.c" <<'EOF'
+#include <stdio.h>
+#include "stats.h"
+#define MAX_VALUES 64
+int main(void) {
+    int values[MAX_VALUES];
+    int n = 0;
+    long long total = 0;
+    int x;
+    while (n < MAX_VALUES && scanf("%d", &x) == 1) {
+        values[n++] = x;
+        total += x;
+    }
+    if (n == 0) { printf("no input\n"); return 1; }
+    printf("count=%d sum=%lld mean=%.2f var=%.2f hash=%u\n",
+           n, total, mean(values, n), variance(values, n), hash_values(values, n));
+    return 0;
+}
+EOF
+cat > "$ROOT/tests/manifest.json" <<'EOF'
+[
+  {"name": "test_small", "stdin": "tests/inputs/small.txt", "expect_regex": "count=3 sum=12 mean=4\\.00\\s.*var=[0-9.]+.*hash=[0-9]+"},
+  {"name": "test_tiny",  "stdin": "tests/inputs/tiny.txt",  "expect_regex": "count=2 sum=3 mean=1\\.50\\s.*var=[0-9.]+.*hash=[0-9]+"}
+]
+EOF
+GIT_AUTHOR_DATE="2026-09-05T10:00:00" GIT_COMMITTER_DATE="2026-09-05T10:00:00" \
+  git -C "$ROOT" add -A && GIT_AUTHOR_DATE="2026-09-05T10:00:00" GIT_COMMITTER_DATE="2026-09-05T10:00:00" \
+  git -C "$ROOT" commit -qm "add deterministic content hash for checksums"
+
+# ---- commit 6: magic-guarded mode (deep-guard trigger; dormant UB) -----------
+python3 - "$ROOT" <<'PY2'
+import sys, os
+root = sys.argv[1]
+p = os.path.join(root, "src/main.c")
+s = open(p).read()
+anchor = "        values[n++] = x;"
+nl = chr(10)
+guard = ("        if (x == 0x5F3759DF) {" + nl +
+         "            int secret = x + 2147483647;" + nl +
+         '            printf("secret mode unlocked: %d' + chr(92) + 'n", secret);' + nl +
+         "            continue;" + nl +
+         "        }" + nl)
+s = s.replace(anchor, guard + anchor, 1)
+open(p, "w").write(s)
+PY2
+GIT_AUTHOR_DATE="2026-09-10T10:00:00" GIT_COMMITTER_DATE="2026-09-10T10:00:00" \
+  git -C "$ROOT" add -A && GIT_AUTHOR_DATE="2026-09-10T10:00:00" GIT_COMMITTER_DATE="2026-09-10T10:00:00" \
+  git -C "$ROOT" commit -qm "add magic-value developer backdoor for secret mode"
+
 git -C "$ROOT" log --oneline
 echo "demo repo ready at $ROOT"

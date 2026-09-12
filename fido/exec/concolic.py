@@ -20,7 +20,7 @@ DEEP_GUARD = [
 def triggered(cr) -> tuple:
     evidence = []
     for e in cr.entities:
-        for _, text in e.added_lines:
+        for text in e.added_lines:
             for rx in DEEP_GUARD:
                 if rx.search(text):
                     evidence.append((e.file, text.strip()[:80]))

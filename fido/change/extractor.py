@@ -45,6 +45,35 @@ REMOVE_OPS = [
     ("null_check_removed",   re.compile(r"if\s*\(.*==\s*NULL|!=\s*NULL|nullptr")),
     ("condition_changed",    re.compile(r"\b(if|while|for)\b")),
 ]
+def strip_comments(line: str, state: dict) -> str:
+    """Minimal C comment stripper with cross-line block-comment state.
+    Prevents English words in comments (if/for/shift...) from becoming
+    false AST-edit-op evidence. String literals are preserved verbatim."""
+    out, i = [], 0
+    while i < len(line):
+        if state.get("block"):
+            j = line.find("*/", i)
+            if j == -1:
+                return "".join(out)
+            state["block"] = False
+            i = j + 2
+            continue
+        if line.startswith("//", i):
+            break
+        if line.startswith("/*", i):
+            state["block"] = True
+            i += 2
+            continue
+        if line[i] == '"':
+            j = i + 1
+            while j < len(line) and line[j] != '"':
+                j += 2 if line[j] == "\\" else 1
+            out.append(line[i:min(j + 1, len(line))]); i = j + 1
+            continue
+        out.append(line[i]); i += 1
+    return "".join(out)
+
+
 # class-weight matrix for the Tier-A scorer (fido/predict). Rows: ops -> classes.
 OP_CLASS_WEIGHTS = {
     "indexed_write":        {"MEM": 3.0},
@@ -181,22 +210,31 @@ def extract(repo: str, commit: str) -> ChangeRecord:
             continue
         funcs = functions_of_file(src)
         buckets: dict = {}
+        added_set = set(hunks["added"])
         for lineno, text in hunks["added"] + hunks["removed"]:
             fname = enclosing_function(funcs, lineno)
             buckets.setdefault(fname, {"added": [], "removed": []})
-            buckets[fname]["added" if (lineno, text) in hunks["added"] else "removed"].append(text)
+            buckets[fname]["added" if (lineno, text) in added_set else "removed"].append(text)
 
         func_ranges = {n: (a, b) for n, a, b in funcs}
+        cstate = {"block": False}
         for fname, hb in buckets.items():
+            hb = {"added": [strip_comments(t, cstate) for t in hb["added"]],
+                  "removed": [strip_comments(t, cstate) for t in hb["removed"]]}
             a, b = func_ranges.get(fname, (0, 0))
             ent = Entity(name=fname or f"<toplevel>@{path}", file=path,
                          op="modified" if fname else "added",
                          start_line=a, end_line=b)
             ent.added_lines = hb["added"]; ent.removed_lines = hb["removed"]
             ops = []
+            FLOATISH = re.compile(r"\b(double|float)\b")
+            INT_OPS = {"int_arith_accumulator", "mul_op", "shift_op", "div_op"}
             for text in hb["added"]:
+                float_line = bool(FLOATISH.search(text))
                 for op, rx in ADD_OPS:
                     if rx is not None and rx.search(text):
+                        if float_line and op in INT_OPS:
+                            continue   # FP guard: double/float arithmetic is not int UB
                         ops.append(op)
             for text in hb["removed"]:
                 for op, rx in REMOVE_OPS:
